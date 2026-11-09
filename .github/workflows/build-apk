@@ -1,0 +1,46 @@
+name: Build HT Four Point Alerts APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'HTFourPointAlerts_OneUpload.zip'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Unpack project (one-upload ZIP)
+        run: |
+          test -f HTFourPointAlerts_OneUpload.zip
+          unzip -oq HTFourPointAlerts_OneUpload.zip
+      - name: Install Android SDK platform
+        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Check screenshot and notification behavior
+        run: |
+          set -e
+          for test in tests/*.test.js; do node "$test"; done
+          mkdir -p /tmp/java-tests
+          javac -encoding UTF-8 -d /tmp/java-tests app/src/main/java/com/htlive/monitor/AlertPolicy.java tests/java/com/htlive/monitor/AlertPolicyTest.java
+          java -cp /tmp/java-tests com.htlive.monitor.AlertPolicyTest
+          javac -encoding UTF-8 -d /tmp/java-tests tests/java/org/json/JSONObject.java app/src/main/java/com/htlive/monitor/MainScoreRiskEngine.java tests/java/com/htlive/monitor/MainScoreRiskEngineTest.java
+          java -cp /tmp/java-tests com.htlive.monitor.MainScoreRiskEngineTest
+      - name: Compile APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HTFourPointAlerts-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
