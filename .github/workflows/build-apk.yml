@@ -13,33 +13,78 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
-      - name: Unpack project (one-upload ZIP)
+
+      - name: Unpack project ZIP
+        shell: bash
         run: |
-          test -f HTFourPointAlerts_OneUpload.zip
+          set -e
+          test -f HTFourPointAlerts_OneUpload.zip || { echo 'Missing HTFourPointAlerts_OneUpload.zip in repository root'; exit 1; }
           unzip -oq HTFourPointAlerts_OneUpload.zip
-      - name: Install Android SDK platform
-        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
-      - name: Check screenshot and notification behavior
+          test -f app/build.gradle
+
+      # Do not use android-actions/setup-android here: Ubuntu hosted runners
+      # already include the Android SDK, and that action can fail while
+      # replacing an otherwise usable preinstalled sdkmanager.
+      - name: Use preinstalled Android SDK
+        shell: bash
+        run: |
+          set -e
+          SDK_DIR="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          test -d "$SDK_DIR" || { echo "Android SDK not found: $SDK_DIR"; exit 1; }
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
+
+          if [ -x "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER="$(find "$SDK_DIR/cmdline-tools" -type f -name sdkmanager -perm /111 2>/dev/null | sort -Vr | head -n1)"
+          fi
+          test -n "$SDKMANAGER" || { echo 'sdkmanager not found'; exit 1; }
+          echo "Using: $SDKMANAGER"
+
+          # Most runners already have these packages; only download if needed.
+          if [ ! -d "$SDK_DIR/platforms/android-35" ] || [ ! -d "$SDK_DIR/build-tools/35.0.0" ]; then
+            (yes | "$SDKMANAGER" --sdk_root="$SDK_DIR" --licenses >/dev/null) || true
+            "$SDKMANAGER" --sdk_root="$SDK_DIR" --install 'platforms;android-35' 'build-tools;35.0.0'
+          fi
+          test -d "$SDK_DIR/platforms/android-35"
+          test -d "$SDK_DIR/build-tools/35.0.0"
+
+      - name: Check alert rules and screenshot parser
+        shell: bash
         run: |
           set -e
           for test in tests/*.test.js; do node "$test"; done
           mkdir -p /tmp/java-tests
-          javac -encoding UTF-8 -d /tmp/java-tests app/src/main/java/com/htlive/monitor/AlertPolicy.java tests/java/com/htlive/monitor/AlertPolicyTest.java
+          javac -encoding UTF-8 -d /tmp/java-tests \
+            app/src/main/java/com/htlive/monitor/AlertPolicy.java \
+            tests/java/com/htlive/monitor/AlertPolicyTest.java
           java -cp /tmp/java-tests com.htlive.monitor.AlertPolicyTest
-          javac -encoding UTF-8 -d /tmp/java-tests tests/java/org/json/JSONObject.java app/src/main/java/com/htlive/monitor/MainScoreRiskEngine.java tests/java/com/htlive/monitor/MainScoreRiskEngineTest.java
+          javac -encoding UTF-8 -d /tmp/java-tests \
+            tests/java/org/json/JSONObject.java \
+            app/src/main/java/com/htlive/monitor/MainScoreRiskEngine.java \
+            tests/java/com/htlive/monitor/MainScoreRiskEngineTest.java
           java -cp /tmp/java-tests com.htlive.monitor.MainScoreRiskEngineTest
+
       - name: Compile APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload compiled APK
+        uses: actions/upload-artifact@v4
         with:
           name: HTFourPointAlerts-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
